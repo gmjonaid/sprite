@@ -1,0 +1,64 @@
+#!/bin/bash
+
+#makereport -u jsmith -p notebooks -d 10-20-2011 -f pdf
+# while getopts u:d:p:f: option
+# do
+# case "${option}"
+# in
+# u) USER=${OPTARG};;
+# d) DATE=${OPTARG};;
+# p) PRODUCT=${OPTARG};;
+# f) FORMAT=$OPTARG;;
+# esac
+# done
+
+FILE1=$1
+FILE2=$2
+INDEX=$3
+
+NF=$(echo $FILE1| cut -d '_' -f 1)
+
+# Run python script for barcode naming: 2 FASTQ files and output file
+
+pypy BarcodeIdentify.py $FILE1 $FILE2 ${NF}.barcoded.fastq
+
+set -e
+
+#Run bowtie2 to map locally 
+
+
+bowtie2 --local --trim5 11 -p 12 -x $INDEX -U ${NF}.barcoded.fastq -S ${NF}.sam
+
+#convert sam file to bam file (ordered)
+set -e
+
+samtools view -S -b ${NF}.sam | samtools sort -@ 12 -o ${NF}.sorted.bam
+
+set -e
+
+#Filter tag for missing barcode
+
+python filterTag.py -i ${NF}.sorted.bam -o ${NF}.allTags.bam
+
+set -e
+
+#Filter reads based on edit distance with reference genome more than 2 
+
+python filterBambyEditDist.py -i ${NF}.allTags.bam -o ${NF}.allTags.edit.bam --edit_max 2
+
+set -e
+
+#Discard reads that overlap with a mask file
+
+bedtools intersect -v -a ${NF}.allTags.edit.bam -b mm9.gatk35-and-rmsk140.bed > ${NF}.allTags.edit.masked.bam
+
+set -e
+
+#Discard reads that has MAPQ less than 10
+
+samtools view -b -q 10 ${NF}.allTags.edit.masked.bam > ${NF}.final.bam
+set -e
+
+#Identify clusters 
+
+python getClusters.py --input ${NF}.final.bam --output ${NF}.clusters --num_tags 5
